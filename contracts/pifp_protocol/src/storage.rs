@@ -303,7 +303,6 @@ pub fn maybe_load_project(env: &Env, id: u64) -> Option<Project> {
         proof_hash: config.proof_hash,
         deadline: config.deadline,
         status: state.status,
-        donation_count: 0,
         donation_count: state.donation_count,
     })
 }
