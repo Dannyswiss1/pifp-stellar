@@ -44,10 +44,7 @@ jobs:
         env:
           SOROBAN_SECRET_KEY: ${{ secrets.SOROBAN_SECRET_KEY }}
         run: |
-          if [ -z "$SOROBAN_SECRET_KEY" ]; then
-            echo "ERROR: SOROBAN_SECRET_KEY is not set. Please add it to your GitHub Symbols/Secrets."
-            exit 1
-          fi
+          # 0. Configure network
 
           # 0. Configure network
           stellar network add --rpc-url https://rpc-futurenet.stellar.org:443 --network-passphrase "Test SDF Future Network ; October 2022" futurenet
