@@ -21,6 +21,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+      - name: Add wasm32v1-none target
+        run: rustup target add wasm32v1-none
 
       # Cache to optimize build times per requirements
       - name: Cache Cargo Registry & Build Artifacts
@@ -93,6 +95,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+      - name: Add wasm32v1-none target
+        run: rustup target add wasm32v1-none
 
       - name: Build Smart Contract
         run: stellar contract build --manifest-path ${{ env.MANIFEST_PATH }}
