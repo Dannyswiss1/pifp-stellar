@@ -51,7 +51,7 @@ jobs:
           # The pipeline will automatically fail here if the deployment crashes 
           # (e.g., insufficient funds or bad secret) due to standard bash 'set -e' behavior.
           CONTRACT_ID=$(stellar contract deploy \
-            --wasm target/wasm32-unknown-unknown/release/pifp_protocol.wasm \
+            --wasm target/wasm32v1-none/release/pifp_protocol.wasm \
             --source "$SOROBAN_SECRET_KEY" \
             --network futurenet)
           
@@ -108,7 +108,7 @@ jobs:
 
           CONTRACT_ID=$(jq -r '.contract_id' deployments.json)
           stellar contract bindings typescript \
-            --wasm target/wasm32-unknown-unknown/release/pifp_protocol.wasm \
+            --wasm target/wasm32v1-none/release/pifp_protocol.wasm \
             --id "$CONTRACT_ID" \
             --network futurenet \
             --output-dir ./sdk
