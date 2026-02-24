@@ -47,6 +47,8 @@ mod test_donation_count;
 mod test_events;
 #[cfg(test)]
 mod test_expire;
+#[cfg(test)]
+mod test_utils;
 
 pub use events::emit_funds_released;
 pub use rbac::Role;
