@@ -14,7 +14,10 @@ mod rpc;
 
 use std::sync::Arc;
 
-use axum::{routing::get, Router};
+use axum::{
+    routing::{get, post},
+    Router,
+};
 use reqwest::Client;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -60,6 +63,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(api::health))
         .route("/events", get(api::get_all_events))
         .route("/projects/:id/events", get(api::get_project_events))
+        .route("/admin/quorum", post(api::set_quorum_threshold))
+        .route("/projects/:id/vote", post(api::submit_vote))
+        .route("/projects/:id/quorum", get(api::get_project_quorum))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(api_state);
