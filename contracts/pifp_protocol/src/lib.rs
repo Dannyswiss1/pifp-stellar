@@ -25,7 +25,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, panic_with_error, token, Address, BytesN, Env, Vec,
+    contract, contracterror, contractimpl, token, Address, BytesN, Env, Vec,
 };
 
 pub mod events;
@@ -328,15 +328,22 @@ pub fn deposit(
         }
     }
     if !found {
-        return Err(Error::NotAuthorized); // Changed to NotAuthorized as it seems more fitting for an unaccepted token
+        return Err(Error::TokenNotAccepted);
     }
 
     // 7️⃣ Transfer tokens from donator to contract.
     let token_client = token::Client::new(&env, &token);
-    token_client.transfer(&donator, &env.current_contract_address(), &amount); // Assuming transfer might also implicitly panic or we need to wrap it. For now, assuming it returns `Result` or handles its own errors.
+    // Transfer tokens from donator to this contract. Use `transfer` provided by the
+    // token client. We ignore the result here since token client methods will
+    // trap on failure in tests.
+    let contract_address = env.current_contract_address();
+    let _ = token_client.transfer(&donator, &contract_address, &amount);
 
     // 8️⃣ Update the per-token balance.
-    storage::add_to_token_balance(&env, project_id, &token, amount); // Assuming this function can return a Result
+    let new_balance = storage::add_to_token_balance(&env, project_id, &token, amount); // Returns new balance
+
+    // Emit a debug event with the new balance to aid fuzz debugging.
+    env.events().publish((soroban_sdk::symbol_short!("dbg_dep"), project_id, token.clone(), new_balance), donator.clone());
 
     // 9️⃣ Standardized event emission
     events::emit_project_funded(&env, project_id, donator, amount);
@@ -364,59 +371,53 @@ pub fn deposit(
     ///
     /// Reads the immutable config (for proof_hash) and mutable state (for status),
     /// then writes back only the small state entry.
-    pub fn verify_and_release(
-        env: Env,
-        oracle: Address,
-        project_id: u64,
-        submitted_proof_hash: BytesN<32>,
-    ) {
-        Self::require_not_paused(&env);
-        oracle.require_auth();
-        // RBAC gate: caller must hold the Oracle role.
-        rbac::require_oracle(&env, &oracle);
+pub fn verify_and_release(
+    env: Env,
+    oracle: Address,
+    project_id: u64,
+    submitted_proof_hash: BytesN<32>,
+) -> Result<(), Error> {
+    Self::require_not_paused(&env)?;
 
-        // Optimised dual-read helper
-        let (config, mut state) = load_project_pair(&env, project_id);
+    oracle.require_auth();
+    rbac::require_oracle(&env, &oracle);
 
-        // Ensure the project is in a verifiable state.
-        match state.status {
-            ProjectStatus::Funding | ProjectStatus::Active => {}
-            ProjectStatus::Completed => panic_with_error!(&env, Error::MilestoneAlreadyReleased),
-            ProjectStatus::Expired => panic_with_error!(&env, Error::ProjectNotFound),
+    let (config, mut state) = load_project_pair(&env, project_id);
+
+    match state.status {
+        ProjectStatus::Funding | ProjectStatus::Active => {}
+        ProjectStatus::Completed => {
+            return Err(Error::MilestoneAlreadyReleased);
         }
-
-        // Mocked ZK verification: compare submitted hash to stored hash.
-        if submitted_proof_hash != config.proof_hash {
-            panic_with_error!(&env, Error::VerificationFailed);
+        ProjectStatus::Expired => {
+            return Err(Error::ProjectExpired);
         }
-
-        // Transition to Completed — only write the state entry.
-        state.status = ProjectStatus::Completed;
-
-        // Transfer all deposited tokens to the creator.
-        // If any transfer fails, panic to revert the entire transaction.
-        let contract_address = env.current_contract_address();
-        for token in config.accepted_tokens.iter() {
-            // Drain the token balance (gets balance and zeros it).
-            let balance = drain_token_balance(&env, project_id, &token);
-
-            // Only transfer if there's a non-zero balance.
-            if balance > 0 {
-                // Create token client and transfer to creator.
-                let token_client = token::Client::new(&env, &token);
-                token_client.transfer(&contract_address, &config.creator, &balance);
-
-                // Emit funds_released event for this token.
-                events::emit_funds_released(&env, project_id, token, balance);
-            }
-        }
-
-        // Save the updated state (now marked as Completed).
-        save_project_state(&env, project_id, &state);
-
-        // Standardized event emission
-        events::emit_project_verified(&env, project_id, oracle.clone(), submitted_proof_hash);
     }
+
+    if submitted_proof_hash != config.proof_hash {
+        return Err(Error::VerificationFailed);
+    }
+
+    state.status = ProjectStatus::Completed;
+
+    let contract_address = env.current_contract_address();
+
+    for token in config.accepted_tokens.iter() {
+        let balance = drain_token_balance(&env, project_id, &token);
+
+        if balance > 0 {
+            let token_client = token::Client::new(&env, &token);
+            token_client.transfer(&contract_address, &config.creator, &balance);
+            events::emit_funds_released(&env, project_id, token, balance);
+        }
+    }
+
+    save_project_state(&env, project_id, &state);
+    events::emit_project_verified(&env, project_id, oracle, submitted_proof_hash);
+
+    Ok(())
+}
+
 
     // ─────────────────────────────────────────────────────────
     // Internal Helpers

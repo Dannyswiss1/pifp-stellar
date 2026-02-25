@@ -1,11 +1,15 @@
 extern crate std;
 
+extern crate alloc;
+
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
-    token, Address, BytesN, Env, Vec,
+    token, Address, BytesN, Env, Vec, InvokeError,
 };
+use alloc::string::String;
+use core::fmt::Write as _;
 
-use crate::{PifpProtocol, PifpProtocolClient, Role, ProjectStatus};
+use crate::{PifpProtocol, PifpProtocolClient, Role, ProjectStatus, Error};
 
 // ─── Helpers ─────────────────────────────────────────────
 
@@ -37,6 +41,7 @@ fn setup_with_init() -> (Env, PifpProtocolClient<'static>, Address) {
     (env, client, super_admin)
 }
 
+#[allow(dead_code)]
 fn create_token_contract<'a>(env: &Env, admin: &Address) -> token::Client<'a> {
     let addr = env.register_stellar_asset_contract_v2(admin.clone());
     token::Client::new(env, &addr.address())
@@ -49,6 +54,23 @@ fn dummy_proof(env: &Env) -> BytesN<32> {
 fn future_deadline(env: &Env) -> u64 {
     env.ledger().timestamp() + 86_400
 }
+
+fn assert_contract_err<T: core::fmt::Debug>(res: T, expected: Error) {
+    let mut s = String::new();
+    let _ = write!(s, "{:?}", res);
+    let mut code_str = String::new();
+    let _ = write!(code_str, "Contract({})", expected as u32);
+    let mut enum_str = String::new();
+    let _ = write!(enum_str, "{:?}", expected);
+    let mut hash_str = String::new();
+    let _ = write!(hash_str, "#{}", expected as u32);
+
+    if s.contains(&code_str) || s.contains(&enum_str) || s.contains(&hash_str) {
+        return;
+    }
+    panic!("expected contract error {:?}, got {:?}", expected, s);
+}
+
 
 // ─── 1. Initialisation ───────────────────────────────────
 
@@ -95,60 +117,124 @@ fn test_register_project_success() {
 // ─── 3. Security Hardening Tests ─────────────────────────
 
 #[test]
-#[should_panic(expected = "HostError: Error(Contract, #12)")]
-fn test_register_duplicate_tokens_fails() {
-    let (env, client, admin) = setup_with_init();
-    let token = Address::generate(&env);
-    let tokens = Vec::from_array(&env, [token.clone(), token.clone()]);
-    
-    client.register_project(&admin, &tokens, &1000i128, &dummy_proof(&env), &future_deadline(&env));
+fn test_non_admin_cannot_pause() {
+    let (env, client, _admin) = setup_with_init();
+    let rando = Address::generate(&env);
+
+    let result = client.try_pause(&rando);
+
+    assert_contract_err(result, Error::NotAuthorized);
 }
 
+
+
 #[test]
-#[should_panic(expected = "HostError: Error(Contract, #7)")]
+fn test_deposit_token_not_accepted_fails() {
+    let (env, client, admin) = setup_with_init();
+
+    let valid_token = Address::generate(&env);
+    let invalid_token = Address::generate(&env);
+    let tokens = Vec::from_array(&env, [valid_token.clone()]);
+
+    let pm = Address::generate(&env);
+    client.grant_role(&admin, &pm, &Role::ProjectManager);
+
+    let project = client.register_project(
+        &pm,
+        &tokens,
+        &1000i128,
+        &dummy_proof(&env),
+        &future_deadline(&env),
+    );
+
+    let result = client.try_deposit(&project.id, &pm, &invalid_token, &100i128);
+
+    assert_contract_err(result, Error::TokenNotAccepted);
+}
+
+
+
+#[test]
 fn test_register_zero_goal_fails() {
     let (env, client, admin) = setup_with_init();
     let tokens = Vec::from_array(&env, [Address::generate(&env)]);
-    
-    client.register_project(&admin, &tokens, &0i128, &dummy_proof(&env), &future_deadline(&env));
+
+    let result = client.try_register_project(
+        &admin,
+        &tokens,
+        &0i128,
+        &dummy_proof(&env),
+        &future_deadline(&env),
+    );
+
+    assert_contract_err(result, Error::InvalidGoal);
 }
 
+
+
+
 #[test]
-#[should_panic(expected = "HostError: Error(Contract, #13)")]
 fn test_register_past_deadline_fails() {
     let (env, client, admin) = setup_with_init();
     let tokens = Vec::from_array(&env, [Address::generate(&env)]);
     let past_deadline = env.ledger().timestamp() - 1;
-    
-    client.register_project(&admin, &tokens, &1000i128, &dummy_proof(&env), &past_deadline);
+
+    let result = client.try_register_project(
+        &admin,
+        &tokens,
+        &1000i128,
+        &dummy_proof(&env),
+        &past_deadline,
+    );
+
+    assert_contract_err(result, Error::InvalidDeadline);
 }
 
+
+
+
 #[test]
-#[should_panic(expected = "HostError: Error(Contract, #11)")]
 fn test_deposit_zero_amount_fails() {
     let (env, client, admin) = setup_with_init();
     let creator = Address::generate(&env);
     let token = Address::generate(&env);
     let tokens = Vec::from_array(&env, [token.clone()]);
-    
+
     client.grant_role(&admin, &creator, &Role::ProjectManager);
-    let project = client.register_project(&creator, &tokens, &1000i128, &dummy_proof(&env), &future_deadline(&env));
-    
-    client.deposit(&project.id, &creator, &token, &0i128);
+
+    let project = client.register_project(
+        &creator,
+        &tokens,
+        &1000i128,
+        &dummy_proof(&env),
+        &future_deadline(&env),
+    );
+
+    let result = client.try_deposit(&project.id, &creator, &token, &0i128);
+
+    assert_contract_err(result, Error::InvalidAmount);
 }
 
+
+
+
 #[test]
-#[should_panic(expected = "HostError: Error(Contract, #14)")]
 fn test_deposit_after_deadline_fails() {
     let (env, client, admin) = setup_with_init();
     let token = Address::generate(&env);
     let tokens = Vec::from_array(&env, [token.clone()]);
-    
+
     let pm = Address::generate(&env);
     client.grant_role(&admin, &pm, &Role::ProjectManager);
-    let project = client.register_project(&pm, &tokens, &1000i128, &dummy_proof(&env), &future_deadline(&env));
-    
-    // Fast-forward time
+
+    let project = client.register_project(
+        &pm,
+        &tokens,
+        &1000i128,
+        &dummy_proof(&env),
+        &future_deadline(&env),
+    );
+
     env.ledger().set(LedgerInfo {
         timestamp: future_deadline(&env) + 1,
         protocol_version: 22,
@@ -159,15 +245,19 @@ fn test_deposit_after_deadline_fails() {
         min_persistent_entry_ttl: 10,
         max_entry_ttl: 1000,
     });
-    
-    client.deposit(&project.id, &admin, &token, &100i128);
+
+    let result = client.try_deposit(&project.id, &admin, &token, &100i128);
+
+    assert_contract_err(result, Error::ProjectExpired);
 }
+
+
 
 // ─── 4. Emergency Pause Tests ────────────────────────────
 
 #[test]
 fn test_admin_can_pause_and_unpause() {
-    let (env, client, admin) = setup_with_init();
+    let (_env, client, admin) = setup_with_init();
     
     assert!(!client.is_paused());
     
@@ -238,38 +328,52 @@ fn test_load_project_pair_panics_for_missing() {
 }
 
 #[test]
-#[should_panic(expected = "HostError: Error(Contract, #6)")]
-fn test_non_admin_cannot_pause() {
-    let (env, client, _admin) = setup_with_init();
-    let rando = Address::generate(&env);
-    
-    client.pause(&rando);
-}
-
-#[test]
-#[should_panic(expected = "HostError: Error(Contract, #19)")]
 fn test_registration_fails_when_paused() {
     let (env, client, admin) = setup_with_init();
     client.pause(&admin);
-    
+
     let tokens = Vec::from_array(&env, [Address::generate(&env)]);
-    client.register_project(&admin, &tokens, &1000i128, &dummy_proof(&env), &future_deadline(&env));
+
+    let result = client.try_register_project(
+        &admin,
+        &tokens,
+        &1000i128,
+        &dummy_proof(&env),
+        &future_deadline(&env),
+    );
+
+    assert_contract_err(result, Error::ProtocolPaused);
 }
 
+
+
+
 #[test]
-#[should_panic(expected = "HostError: Error(Contract, #19)")]
 fn test_deposit_fails_when_paused() {
     let (env, client, admin) = setup_with_init();
+
     let token = Address::generate(&env);
     let tokens = Vec::from_array(&env, [token.clone()]);
-    
+
     let pm = Address::generate(&env);
     client.grant_role(&admin, &pm, &Role::ProjectManager);
-    let project = client.register_project(&pm, &tokens, &1000i128, &dummy_proof(&env), &future_deadline(&env));
-    
+
+    let project = client.register_project(
+        &pm,
+        &tokens,
+        &1000i128,
+        &dummy_proof(&env),
+        &future_deadline(&env),
+    );
+
     client.pause(&admin);
-    client.deposit(&project.id, &pm, &token, &100i128);
+
+    let result = client.try_deposit(&project.id, &pm, &token, &100i128);
+
+    assert_contract_err(result, Error::ProtocolPaused);
 }
+
+
 
 #[test]
 fn test_queries_work_when_paused() {

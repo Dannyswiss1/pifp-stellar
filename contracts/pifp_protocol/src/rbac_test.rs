@@ -1,9 +1,12 @@
 
 #![cfg(test)]
 
+extern crate std;
+extern crate alloc;
+
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    Address, BytesN, Env, vec,
+    Address, BytesN, Env, vec, InvokeError,
 };
 
 use crate::{PifpProtocol, PifpProtocolClient, Role, Error};
@@ -31,6 +34,25 @@ fn dummy_proof(env: &Env) -> BytesN<32> {
 
 fn future_deadline(env: &Env) -> u64 {
     env.ledger().timestamp() + 86_400
+}
+
+use alloc::string::String;
+use core::fmt::Write as _;
+
+fn assert_contract_err<T: core::fmt::Debug>(res: T, expected: Error) {
+    let mut s = String::new();
+    let _ = write!(s, "{:?}", res);
+    let mut code_str = String::new();
+    let _ = write!(code_str, "Contract({})", expected as u32);
+    let mut enum_str = String::new();
+    let _ = write!(enum_str, "{:?}", expected);
+    let mut hash_str = String::new();
+    let _ = write!(hash_str, "#{}", expected as u32);
+
+    if s.contains(&code_str) || s.contains(&enum_str) || s.contains(&hash_str) {
+        return;
+    }
+    panic!("expected contract error {:?}, got {:?}", expected, s);
 }
 
 // ─── 1. Initialisation ───────────────────────────────────
@@ -123,13 +145,15 @@ fn test_no_role_cannot_grant() {
 }
 
 #[test]
-#[should_panic]
 fn test_project_manager_cannot_grant() {
     let (env, client, super_admin) = setup_with_init();
-    let pm     = Address::generate(&env);
+    let pm = Address::generate(&env);
     let target = Address::generate(&env);
     client.grant_role(&super_admin, &pm, &Role::ProjectManager);
-    client.grant_role(&pm, &target, &Role::Auditor);
+
+    let result = client.try_grant_role(&pm, &target, &Role::Auditor);
+
+    assert_contract_err(result, Error::NotAuthorized);
 }
 
 // ─── 3. revoke_role ──────────────────────────────────────
@@ -163,14 +187,16 @@ fn test_cannot_revoke_super_admin_via_revoke_role() {
 }
 
 #[test]
-#[should_panic]
 fn test_project_manager_cannot_revoke() {
     let (env, client, super_admin) = setup_with_init();
-    let pm     = Address::generate(&env);
+    let pm = Address::generate(&env);
     let target = Address::generate(&env);
     client.grant_role(&super_admin, &pm, &Role::ProjectManager);
     client.grant_role(&super_admin, &target, &Role::Auditor);
-    client.revoke_role(&pm, &target);
+
+    let result = client.try_revoke_role(&pm, &target);
+
+    assert_contract_err(result, Error::NotAuthorized);
 }
 
 #[test]

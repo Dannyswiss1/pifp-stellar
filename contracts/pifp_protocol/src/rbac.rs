@@ -147,9 +147,11 @@ pub fn grant_role(env: &Env, caller: &Address, target: &Address, role: Role) {
             require_role(env, caller, &Role::SuperAdmin);
         }
         // Admin or SuperAdmin can grant everything else
-        _ => {
-            require_any_of(env, caller, &[Role::SuperAdmin, Role::Admin]);
-        }
+            _ => {
+                if let Err(_) = require_any_of(env, caller, &[Role::SuperAdmin, Role::Admin]) {
+                    panic_with_error_rbac(env, Error::NotAuthorized);
+                }
+            }
     }
 
     // Prevent demotion of the SuperAdmin via grant_role
@@ -177,7 +179,9 @@ pub fn grant_role(env: &Env, caller: &Address, target: &Address, role: Role) {
 ///
 /// Emits a `role_del` event if a role existed.
 pub fn revoke_role(env: &Env, caller: &Address, target: &Address) {
-    require_any_of(env, caller, &[Role::SuperAdmin, Role::Admin]);
+    if let Err(_) = require_any_of(env, caller, &[Role::SuperAdmin, Role::Admin]) {
+        panic_with_error_rbac(env, Error::NotAuthorized);
+    }
 
     // Protect the SuperAdmin address from revocation via this path
     let super_admin = get_super_admin(env);
@@ -250,7 +254,9 @@ pub fn require_any_of(
 /// Convenience wrapper used on configuration-level operations.
 #[inline]
 pub fn require_admin_or_above(env: &Env, address: &Address) {
-    require_any_of(env, address, &[Role::SuperAdmin, Role::Admin]);
+    if let Err(_) = require_any_of(env, address, &[Role::SuperAdmin, Role::Admin]) {
+        panic_with_error_rbac(env, Error::NotAuthorized);
+    }
 }
 
 /// Assert that `address` holds the Oracle role.
