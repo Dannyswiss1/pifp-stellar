@@ -1,4 +1,3 @@
-
 extern crate std;
 use std::vec::Vec;
 
@@ -148,7 +147,7 @@ proptest! {
 
         let balance_after = client.get_balance(&project.id, &token_client.address);
         assert_deposit_invariant(balance_before, balance_after, amount);
-        
+
         let updated = client.get_project(&project.id);
         assert_all_project_invariants(&updated);
     }
@@ -189,7 +188,7 @@ proptest! {
             let after_balance = client.get_balance(&project.id, &token_client.address);
 
             assert_deposit_invariant(before, after_balance, *amount);
-            
+
             let after = client.get_project(&project.id);
             assert_all_project_invariants(&after);
 
@@ -428,7 +427,7 @@ proptest! {
             let after_balance = client.get_balance(&project.id, &token_client.address);
 
             assert_deposit_invariant(before_balance, after_balance, *amount);
-            
+
             let after = client.get_project(&project.id);
             assert_project_immutable_fields(&project, &after);
             assert_all_project_invariants(&after);
@@ -448,12 +447,18 @@ proptest! {
         assert_valid_status_transition(&ProjectStatus::Funding, &final_project.status);
         assert_project_immutable_fields(&project, &final_project);
         assert_eq!(final_project.status, ProjectStatus::Completed);
-        
-        // Balance should be unchanged after verification.
-        let post_verify_balance = client.get_balance(&project.id, &token_client.address);
-        assert_eq!(post_verify_balance, total_deposited);
 
-        // Phase 4: Double-verify should fail.
+        // Phase 4: Balance verification after verification.
+        // Balance should be zero after verification — funds are drained and
+        // transferred to the creator during verify_and_release.
+        let post_verify_balance = client.get_balance(&project.id, &token_client.address);
+        assert_eq!(post_verify_balance, 0i128);
+
+        // Creator's actual token balance should equal what was deposited.
+        let creator_actual_balance = token_client.balance(&creator);
+        assert_eq!(creator_actual_balance, total_deposited);
+
+        // Phase 5: Double-verify should fail.
         let result = client.try_verify_and_release(&oracle, &project.id, &proof_hash);
         prop_assert!(result.is_err(), "double verification should fail");
     }

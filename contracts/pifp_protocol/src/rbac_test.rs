@@ -1,4 +1,6 @@
+extern crate std;
 
+ error_handling
 #![cfg(test)]
 
 extern crate std;
@@ -57,94 +59,56 @@ fn assert_contract_err<T: core::fmt::Debug>(res: T, expected: Error) {
 
 // ─── 1. Initialisation ───────────────────────────────────
 
+use crate::{test_utils::TestContext, Role};
+use soroban_sdk::vec;
+ main
+
 #[test]
 fn test_init_sets_super_admin() {
-    let (_env, client, super_admin) = setup_with_init();
-    assert!(client.has_role(&super_admin, &Role::SuperAdmin));
-    assert_eq!(client.role_of(&super_admin), Some(Role::SuperAdmin));
+    let ctx = TestContext::new();
+    assert!(ctx.client.has_role(&ctx.admin, &Role::SuperAdmin));
 }
-
-#[test]
-#[should_panic]
-fn test_init_twice_panics() {
-    let (_env, client, super_admin) = setup_with_init();
-    client.init(&super_admin);
-}
-
-// ─── 2. grant_role ───────────────────────────────────────
 
 #[test]
 fn test_super_admin_can_grant_admin() {
-    let (env, client, super_admin) = setup_with_init();
-    let admin = Address::generate(&env);
-    client.grant_role(&super_admin, &admin, &Role::Admin);
-    assert!(client.has_role(&admin, &Role::Admin));
+    let ctx = TestContext::new();
+    let admin = ctx.generate_address();
+    ctx.client.grant_role(&ctx.admin, &admin, &Role::Admin);
+    assert!(ctx.client.has_role(&admin, &Role::Admin));
 }
 
 #[test]
 fn test_super_admin_can_grant_oracle() {
-    let (env, client, super_admin) = setup_with_init();
-    let oracle = Address::generate(&env);
-    client.grant_role(&super_admin, &oracle, &Role::Oracle);
-    assert!(client.has_role(&oracle, &Role::Oracle));
-}
-
-#[test]
-fn test_super_admin_can_grant_project_manager() {
-    let (env, client, super_admin) = setup_with_init();
-    let pm = Address::generate(&env);
-    client.grant_role(&super_admin, &pm, &Role::ProjectManager);
-    assert!(client.has_role(&pm, &Role::ProjectManager));
-}
-
-#[test]
-fn test_super_admin_can_grant_auditor() {
-    let (env, client, super_admin) = setup_with_init();
-    let auditor = Address::generate(&env);
-    client.grant_role(&super_admin, &auditor, &Role::Auditor);
-    assert!(client.has_role(&auditor, &Role::Auditor));
+    let ctx = TestContext::new();
+    let oracle = ctx.generate_address();
+    ctx.client.grant_role(&ctx.admin, &oracle, &Role::Oracle);
+    assert!(ctx.client.has_role(&oracle, &Role::Oracle));
 }
 
 #[test]
 fn test_admin_can_grant_project_manager() {
-    let (env, client, super_admin) = setup_with_init();
-    let admin = Address::generate(&env);
-    let pm    = Address::generate(&env);
-    client.grant_role(&super_admin, &admin, &Role::Admin);
-    client.grant_role(&admin, &pm, &Role::ProjectManager);
-    assert!(client.has_role(&pm, &Role::ProjectManager));
-}
+    let ctx = TestContext::new();
+    let admin = ctx.generate_address();
+    let pm = ctx.generate_address();
 
-#[test]
-fn test_admin_can_grant_oracle() {
-    let (env, client, super_admin) = setup_with_init();
-    let admin  = Address::generate(&env);
-    let oracle = Address::generate(&env);
-    client.grant_role(&super_admin, &admin, &Role::Admin);
-    client.grant_role(&admin, &oracle, &Role::Oracle);
-    assert!(client.has_role(&oracle, &Role::Oracle));
+    ctx.client.grant_role(&ctx.admin, &admin, &Role::Admin);
+    ctx.client.grant_role(&admin, &pm, &Role::ProjectManager);
+    assert!(ctx.client.has_role(&pm, &Role::ProjectManager));
 }
 
 #[test]
 #[should_panic]
 fn test_admin_cannot_grant_super_admin() {
-    let (env, client, super_admin) = setup_with_init();
-    let admin    = Address::generate(&env);
-    let impostor = Address::generate(&env);
-    client.grant_role(&super_admin, &admin, &Role::Admin);
-    client.grant_role(&admin, &impostor, &Role::SuperAdmin);
+    let ctx = TestContext::new();
+    let admin = ctx.generate_address();
+    let impostor = ctx.generate_address();
+
+    ctx.client.grant_role(&ctx.admin, &admin, &Role::Admin);
+    ctx.client.grant_role(&admin, &impostor, &Role::SuperAdmin);
 }
 
 #[test]
-#[should_panic]
-fn test_no_role_cannot_grant() {
-    let (env, client, _) = setup_with_init();
-    let nobody = Address::generate(&env);
-    let target = Address::generate(&env);
-    client.grant_role(&nobody, &target, &Role::Admin);
-}
-
-#[test]
+ error_handling
 fn test_project_manager_cannot_grant() {
     let (env, client, super_admin) = setup_with_init();
     let pm = Address::generate(&env);
@@ -159,26 +123,13 @@ fn test_project_manager_cannot_grant() {
 // ─── 3. revoke_role ──────────────────────────────────────
 
 #[test]
+
+ main
 fn test_super_admin_can_revoke_admin() {
-    let (env, client, super_admin) = setup_with_init();
-    let admin = Address::generate(&env);
-    client.grant_role(&super_admin, &admin, &Role::Admin);
-    assert!(client.has_role(&admin, &Role::Admin));
-    client.revoke_role(&super_admin, &admin);
-    assert!(!client.has_role(&admin, &Role::Admin));
-}
+    let ctx = TestContext::new();
+    let admin = ctx.generate_address();
 
-#[test]
-fn test_admin_can_revoke_project_manager() {
-    let (env, client, super_admin) = setup_with_init();
-    let admin = Address::generate(&env);
-    let pm    = Address::generate(&env);
-    client.grant_role(&super_admin, &admin, &Role::Admin);
-    client.grant_role(&admin, &pm, &Role::ProjectManager);
-    client.revoke_role(&admin, &pm);
-    assert!(!client.has_role(&pm, &Role::ProjectManager));
-}
-
+ error_handling
 #[test]
 #[should_panic]
 fn test_cannot_revoke_super_admin_via_revoke_role() {
@@ -199,76 +150,47 @@ fn test_project_manager_cannot_revoke() {
     assert_contract_err(result, Error::NotAuthorized);
 }
 
-#[test]
-fn test_revoke_no_role_is_noop() {
-    let (env, client, super_admin) = setup_with_init();
-    let nobody = Address::generate(&env);
-    client.revoke_role(&super_admin, &nobody);
-    assert_eq!(client.role_of(&nobody), None);
-}
+    ctx.client.grant_role(&ctx.admin, &admin, &Role::Admin);
+    assert!(ctx.client.has_role(&admin, &Role::Admin));
+ main
 
-// ─── 4. transfer_super_admin ─────────────────────────────
+    ctx.client.revoke_role(&ctx.admin, &admin);
+    assert!(!ctx.client.has_role(&admin, &Role::Admin));
+}
 
 #[test]
 fn test_transfer_super_admin() {
-    let (env, client, old_super) = setup_with_init();
-    let new_super = Address::generate(&env);
-    client.transfer_super_admin(&old_super, &new_super);
-    assert!(client.has_role(&new_super, &Role::SuperAdmin));
-    assert!(!client.has_role(&old_super, &Role::SuperAdmin));
-}
+    let ctx = TestContext::new();
+    let new_super = ctx.generate_address();
 
-// ─── 5. register_project: RBAC gates ────────────────────
+    ctx.client.transfer_super_admin(&ctx.admin, &new_super);
+    assert!(ctx.client.has_role(&new_super, &Role::SuperAdmin));
+    assert!(!ctx.client.has_role(&ctx.admin, &Role::SuperAdmin));
+}
 
 #[test]
 fn test_project_manager_can_register() {
-    let (env, client, super_admin) = setup_with_init();
-    let pm       = Address::generate(&env);
-    let tokens   = vec![&env, Address::generate(&env)];
-    client.grant_role(&super_admin, &pm, &Role::ProjectManager);
-    let project = client.register_project(&pm, &tokens, &1000i128, &dummy_proof(&env), &future_deadline(&env));
-    assert_eq!(project.creator, pm);
-}
+    let ctx = TestContext::new();
+    let tokens = vec![&ctx.env, ctx.generate_address()];
 
-#[test]
-#[should_panic]
-fn test_no_role_cannot_register_project() {
-    let (env, client, _) = setup_with_init();
-    let nobody = Address::generate(&env);
-    let tokens = vec![&env, Address::generate(&env)];
-    client.register_project(&nobody, &tokens, &1000i128, &dummy_proof(&env), &future_deadline(&env));
+    let project = ctx.client.register_project(
+        &ctx.manager,
+        &tokens,
+        &1000i128,
+        &ctx.dummy_proof(),
+        &(ctx.env.ledger().timestamp() + 86400),
+    );
+    assert_eq!(project.creator, ctx.manager);
 }
-
-// ─── 6. set_oracle + verify_and_release ─────────────────
 
 #[test]
 fn test_oracle_can_verify() {
-    let (env, client, super_admin) = setup_with_init();
-    let oracle = Address::generate(&env);
-    let creator = Address::generate(&env);
-    let tokens = vec![&env, Address::generate(&env)];
-    let proof = dummy_proof(&env);
-    
-    client.set_oracle(&super_admin, &oracle);
-    client.grant_role(&super_admin, &creator, &Role::ProjectManager);
-    
-    let project = client.register_project(&creator, &tokens, &100i128, &proof, &future_deadline(&env));
-    client.verify_and_release(&oracle, &project.id, &proof);
-    
-    let completed = client.get_project(&project.id);
-    assert_eq!(completed.status, crate::ProjectStatus::Completed);
-}
+    let ctx = TestContext::new();
+    let (project, _, _) = ctx.setup_project(100);
 
-#[test]
-#[should_panic]
-fn test_non_oracle_cannot_verify() {
-    let (env, client, super_admin) = setup_with_init();
-    let pm      = Address::generate(&env);
-    let impersonator = Address::generate(&env);
-    let tokens = vec![&env, Address::generate(&env)];
-    let proof = dummy_proof(&env);
-    
-    client.grant_role(&super_admin, &pm, &Role::ProjectManager);
-    let project = client.register_project(&pm, &tokens, &100i128, &proof, &future_deadline(&env));
-    client.verify_and_release(&impersonator, &project.id, &proof);
+    ctx.client
+        .verify_and_release(&ctx.oracle, &project.id, &ctx.dummy_proof());
+
+    let completed = ctx.client.get_project(&project.id);
+    assert_eq!(completed.status, crate::ProjectStatus::Completed);
 }

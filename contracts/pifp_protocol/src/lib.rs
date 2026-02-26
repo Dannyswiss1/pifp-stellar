@@ -10,8 +10,9 @@
 //! | Role admin   | `grant_role`, `revoke_role`, `transfer_super_admin`, `set_oracle` |
 //! | Registration | [`PifpProtocol::register_project`]          |
 //! | Funding      | [`PifpProtocol::deposit`]                   |
+//! | Donor safety | [`PifpProtocol::refund`]                    |
 //! | Verification | [`PifpProtocol::verify_and_release`]        |
-//! | Queries      | `get_project`, `role_of`, `has_role`        |
+//! | Queries      | `get_project`, `get_project_balances`, `role_of`, `has_role` |
 //!
 //! ## Architecture
 //!
@@ -34,27 +35,36 @@ mod storage;
 mod types;
 
 #[cfg(test)]
-mod invariants;
+mod fuzz_test;
 #[cfg(test)]
-mod test;
+mod invariants;
 #[cfg(test)]
 mod rbac_test;
 #[cfg(test)]
-mod fuzz_test;
+mod test;
+#[cfg(test)]
+mod test_donation_count;
 #[cfg(test)]
 mod test_events;
+#[cfg(test)]
+mod test_expire;
+#[cfg(test)]
+mod test_refund;
+#[cfg(test)]
+mod test_utils;
 
+pub use events::emit_funds_released;
 pub use rbac::Role;
 use storage::{
-    get_and_increment_project_id,
-    load_project,
-    load_project_pair,
-    save_project,
-    save_project_state,
-    drain_token_balance,
+    drain_token_balance, get_all_balances, get_and_increment_project_id, load_project,
+    load_project_pair, maybe_load_project, save_project, save_project_state,
 };
+ error_handling
 pub use types::{Project, ProjectStatus};
 pub use events::emit_funds_released;
+
+pub use types::{Project, ProjectBalances, ProjectStatus};
+ main
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -80,11 +90,16 @@ pub enum Error {
     Overflow = 18,
     ProtocolPaused = 19,
     GoalMismatch = 20,
+ error_handling
 
     // Added for robustness
     TokenNotAccepted = 21,
     InvalidStateTransition = 22,
     DeadlineOverflow = 23,
+
+    ProjectNotExpired = 21,
+    InvalidTransition = 22,
+ main
 }
 
 #[contract]
@@ -226,8 +241,15 @@ impl PifpProtocol {
         }
     }
 
+ error_handling
     // 6️⃣ Validate goal
     const MAX_GOAL: i128 = 1_000_000_000_000_000_000_000_000_000_000;
+
+        if goal <= 0 || goal > 1_000_000_000_000_000_000_000_000_000_000i128 {
+            // 10^30
+            panic_with_error!(&env, Error::InvalidGoal);
+        }
+ main
 
     if goal <= 0 || goal > MAX_GOAL {
         return Err(Error::InvalidGoal);
@@ -278,10 +300,19 @@ impl PifpProtocol {
         storage::get_token_balance(&env, project_id, &token)
     }
 
-    /// Return a snapshot of all balances for `project_id`.
-    pub fn get_balances(env: Env, project_id: u64) -> types::ProjectBalances {
-        let project = load_project(&env, project_id);
-        storage::get_all_balances(&env, &project)
+    /// Return the current per-token balances for a project.
+    ///
+    /// Reconstructs the balance snapshot from persistent storage for every
+    /// token that was accepted at registration time.
+    ///
+    /// # Errors
+    /// Panics with `Error::ProjectNotFound` if `project_id` does not exist.
+    pub fn get_project_balances(env: Env, project_id: u64) -> ProjectBalances {
+        let project = match maybe_load_project(&env, project_id) {
+            Some(p) => p,
+            None => panic_with_error!(&env, Error::ProjectNotFound),
+        };
+        get_all_balances(&env, &project)
     }
 
     /// Deposit funds into a project.
@@ -308,6 +339,7 @@ pub fn deposit(
     // This is the optimized retrieval pattern; it also returns the state needed for the subsequent checks.
     let (config, state) = load_project_pair(&env, project_id); // Assuming load_project_pair can return a Result
 
+ error_handling
     // 4️⃣ Check expiration
     if env.ledger().timestamp() >= config.deadline {
         return Err(Error::ProjectExpired);
@@ -325,6 +357,27 @@ pub fn deposit(
         if t == token {
             found = true;
             break;
+
+        // Read both config and state with a single helper that bumps TTLs
+        // atomically. This is the optimized retrieval pattern; it also returns
+        // the state needed for the subsequent checks.
+        let (config, mut state) = load_project_pair(&env, project_id);
+
+        // Check expiration
+        if env.ledger().timestamp() >= config.deadline {
+            if matches!(state.status, ProjectStatus::Funding | ProjectStatus::Active) {
+                state.status = ProjectStatus::Expired;
+                save_project_state(&env, project_id, &state);
+            }
+            panic_with_error!(&env, Error::ProjectExpired);
+        }
+
+        // Basic status check: must be Funding or Active.
+        match state.status {
+            ProjectStatus::Funding | ProjectStatus::Active => {}
+            ProjectStatus::Expired => panic_with_error!(&env, Error::ProjectExpired),
+            _ => panic_with_error!(&env, Error::ProjectNotActive),
+ main
         }
     }
     if !found {
@@ -339,17 +392,83 @@ pub fn deposit(
     let contract_address = env.current_contract_address();
     let _ = token_client.transfer(&donator, &contract_address, &amount);
 
+ error_handling
     // 8️⃣ Update the per-token balance.
     let new_balance = storage::add_to_token_balance(&env, project_id, &token, amount); // Returns new balance
 
     // Emit a debug event with the new balance to aid fuzz debugging.
     env.events().publish((soroban_sdk::symbol_short!("dbg_dep"), project_id, token.clone(), new_balance), donator.clone());
 
+        // Check if this is a new unique (donator, token) pair.
+        let is_new_donor = !storage::has_donator_seen(&env, project_id, &donator, &token);
+        if is_new_donor {
+            // Increment donation count and mark as seen.
+            state.donation_count += 1;
+            storage::mark_donator_seen(&env, project_id, &donator, &token);
+            // Save the updated state.
+            save_project_state(&env, project_id, &state);
+        }
+
+        // Transfer tokens from donator to contract.
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&donator, &env.current_contract_address(), &amount);
+
+        // Update the per-token balance.
+        let new_balance = storage::add_to_token_balance(&env, project_id, &token, amount);
+
+        // If this is the primary token and goal is reached, transition from Funding to Active.
+        if state.status == ProjectStatus::Funding {
+            if let Some(first_token) = config.accepted_tokens.get(0) {
+                if token == first_token && new_balance >= config.goal {
+                    state.status = ProjectStatus::Active;
+                    save_project_state(&env, project_id, &state);
+                    events::emit_project_active(&env, project_id);
+                }
+            }
+        }
+
+        // Track per-donator refundable amount for this token.
+        storage::add_to_donator_balance(&env, project_id, &token, &donator, amount);
+ main
+
     // 9️⃣ Standardized event emission
     events::emit_project_funded(&env, project_id, donator, amount);
 
     Ok(())
 }
+
+    /// Refund a donator from an expired project that was not verified.
+    pub fn refund(env: Env, donator: Address, project_id: u64, token: Address) {
+        donator.require_auth();
+
+        let (config, mut state) = load_project_pair(&env, project_id);
+
+        if env.ledger().timestamp() >= config.deadline
+            && matches!(state.status, ProjectStatus::Funding | ProjectStatus::Active)
+        {
+            state.status = ProjectStatus::Expired;
+            save_project_state(&env, project_id, &state);
+        }
+
+        if state.status != ProjectStatus::Expired {
+            panic_with_error!(&env, Error::ProjectNotExpired);
+        }
+
+        let refund_amount = storage::get_donator_balance(&env, project_id, &token, &donator);
+        if refund_amount <= 0 {
+            panic_with_error!(&env, Error::InsufficientBalance);
+        }
+
+        // Zero-out first to prevent double-refund/reentrancy patterns.
+        storage::set_donator_balance(&env, project_id, &token, &donator, 0);
+        storage::add_to_token_balance(&env, project_id, &token, -refund_amount);
+
+        let contract_address = env.current_contract_address();
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&contract_address, &donator, &refund_amount);
+
+        events::emit_refunded(&env, project_id, donator, refund_amount);
+    }
 
     /// Grant the Oracle role to `oracle`.
     ///
@@ -371,6 +490,7 @@ pub fn deposit(
     ///
     /// Reads the immutable config (for proof_hash) and mutable state (for status),
     /// then writes back only the small state entry.
+ error_handling
 pub fn verify_and_release(
     env: Env,
     oracle: Address,
@@ -388,6 +508,35 @@ pub fn verify_and_release(
         ProjectStatus::Funding | ProjectStatus::Active => {}
         ProjectStatus::Completed => {
             return Err(Error::MilestoneAlreadyReleased);
+
+    pub fn verify_and_release(
+        env: Env,
+        oracle: Address,
+        project_id: u64,
+        submitted_proof_hash: BytesN<32>,
+    ) {
+        Self::require_not_paused(&env);
+        oracle.require_auth();
+        // RBAC gate: caller must hold the Oracle role.
+        rbac::require_oracle(&env, &oracle);
+
+        // Optimised dual-read helper
+        let (config, mut state) = load_project_pair(&env, project_id);
+
+        if env.ledger().timestamp() >= config.deadline
+            && matches!(state.status, ProjectStatus::Funding | ProjectStatus::Active)
+        {
+            state.status = ProjectStatus::Expired;
+            save_project_state(&env, project_id, &state);
+            panic_with_error!(&env, Error::ProjectExpired);
+        }
+
+        // Ensure the project is in a verifiable state.
+        match state.status {
+            ProjectStatus::Funding | ProjectStatus::Active => {}
+            ProjectStatus::Completed => panic_with_error!(&env, Error::MilestoneAlreadyReleased),
+            ProjectStatus::Expired => panic_with_error!(&env, Error::ProjectExpired),
+ main
         }
         ProjectStatus::Expired => {
             return Err(Error::ProjectExpired);
@@ -418,6 +567,34 @@ pub fn verify_and_release(
     Ok(())
 }
 
+
+    /// Mark a project as expired if its deadline has passed.
+    ///
+    /// Permissionless: anyone can trigger expiration once the deadline is met.
+    /// - Panics if project is not in Funding status.
+    /// - Panics if deadline has not passed.
+    pub fn expire_project(env: Env, project_id: u64) {
+        let (config, mut state) = load_project_pair(&env, project_id);
+
+        // State transition check: only Funding or Active projects can expire.
+        // Completed projects cannot be expired.
+        match state.status {
+            ProjectStatus::Funding | ProjectStatus::Active => {}
+            _ => panic_with_error!(&env, Error::InvalidTransition),
+        }
+
+        // Deadline check.
+        if env.ledger().timestamp() < config.deadline {
+            panic_with_error!(&env, Error::ProjectNotExpired);
+        }
+
+        // Update status and save.
+        state.status = ProjectStatus::Expired;
+        save_project_state(&env, project_id, &state);
+
+        // Standardized event emission.
+        events::emit_project_expired(&env, project_id, config.deadline);
+    }
 
     // ─────────────────────────────────────────────────────────
     // Internal Helpers
